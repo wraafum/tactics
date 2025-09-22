@@ -42,8 +42,11 @@ var state: String = "await_unit"
 
 var end_turn_button: Button
 var skip_attack_button: Button
+var restart_button: Button
 var status_label: Label
 var info_label: Label
+
+var show_enemy_ranges: bool = false
 
 func _ready() -> void:
     board.setup(GRID_SIZE, TILE_SIZE)
@@ -66,14 +69,22 @@ func setup_ui() -> void:
     skip_attack_button.pressed.connect(_on_skip_attack_pressed)
     canvas_layer.add_child(skip_attack_button)
 
+    restart_button = Button.new()
+    restart_button.text = "Restart"
+    restart_button.position = Vector2(16, 104)
+    restart_button.pressed.connect(_on_restart_pressed)
+    canvas_layer.add_child(restart_button)
+
     status_label = Label.new()
     status_label.position = Vector2(200, 16)
     status_label.text = "Player Turn"
     canvas_layer.add_child(status_label)
 
     info_label = Label.new()
-    info_label.position = Vector2(16, 110)
-    info_label.text = "Click a unit, select a tile to move, then choose an enemy to attack."
+    info_label.position = Vector2(16, 150)
+    info_label.custom_minimum_size = Vector2(360, 100)
+    info_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    info_label.text = ""
     canvas_layer.add_child(info_label)
 
 func spawn_initial_units() -> void:
@@ -85,12 +96,94 @@ func spawn_initial_units() -> void:
     spawn_unit("Archer", ENEMY_TEAM, Vector2i(5, 1), "Enemy Archer")
     spawn_unit("Mage", ENEMY_TEAM, Vector2i(6, 2), "Enemy Mage")
 
+    update_enemy_range_overlay()
+
 func spawn_unit(class_name: String, team: String, position: Vector2i, display_name: String) -> void:
     var unit: Unit = UNIT_SCENE.instantiate()
     units_root.add_child(unit)
     unit.initialize(class_name, CLASS_DEFS[class_name], team, display_name, board)
     unit.set_grid_position(position)
     units.append(unit)
+
+func reset_battle() -> void:
+    current_team = PLAYER_TEAM
+    battle_over = false
+    selected_unit = null
+    state = "await_unit"
+    available_moves.clear()
+    available_attacks.clear()
+    board.clear_highlights()
+    board.set_enemy_range_tiles([])
+    end_turn_button.disabled = false
+    skip_attack_button.visible = false
+
+    for child in units_root.get_children():
+        child.queue_free()
+    units.clear()
+
+    spawn_initial_units()
+    start_player_turn()
+    update_info_text()
+
+func update_enemy_range_overlay() -> void:
+    if not board:
+        return
+    if show_enemy_ranges:
+        var tiles: Array = []
+        var seen := {}
+        for enemy: Unit in get_units_for_team(ENEMY_TEAM):
+            for tile: Vector2i in get_attack_tiles(enemy):
+                if not seen.has(tile):
+                    seen[tile] = true
+                    tiles.append(tile)
+        board.set_enemy_range_tiles(tiles)
+    else:
+        board.set_enemy_range_tiles([])
+
+func update_info_text() -> void:
+    if not info_label:
+        return
+
+    if battle_over:
+        var message := "Battle finished. Press Restart to play again."
+        if status_label:
+            message = "%s Press Restart to play again." % status_label.text
+        info_label.text = message
+        return
+
+    var toggle_hint := "\nPress [R] to %s enemy ranges." % ("hide" if show_enemy_ranges else "show")
+
+    if current_team == PLAYER_TEAM:
+        match state:
+            "await_unit":
+                info_label.text = "Select a unit to activate.%s" % toggle_hint
+            "await_move":
+                var has_selected := selected_unit != null and is_instance_valid(selected_unit)
+                if has_selected:
+                    info_label.text = "Move %s (HP %d/%d, Move %d). Choose a destination tile or click the current tile to stay.%s" % [
+                        selected_unit.unit_name,
+                        selected_unit.hp,
+                        selected_unit.max_hp,
+                        selected_unit.move_range,
+                        toggle_hint,
+                    ]
+                else:
+                    info_label.text = "Choose a destination tile.%s" % toggle_hint
+            "await_attack":
+                var has_attacker := selected_unit != null and is_instance_valid(selected_unit)
+                if has_attacker:
+                    info_label.text = "Choose a target for %s (Power %d, Range %d) or press Skip Attack.%s" % [
+                        selected_unit.unit_name,
+                        selected_unit.attack_power,
+                        selected_unit.attack_range,
+                        toggle_hint,
+                    ]
+                else:
+                    info_label.text = "Choose an enemy to attack.%s" % toggle_hint
+            _:
+                info_label.text = "Plan your next action.%s" % toggle_hint
+    else:
+        info_label.text = "Enemy units are taking their actions.%s" % toggle_hint
 
 func start_player_turn() -> void:
     if battle_over:
@@ -105,6 +198,8 @@ func start_player_turn() -> void:
     end_turn_button.disabled = false
     status_label.text = "Player Turn"
     skip_attack_button.visible = false
+    update_enemy_range_overlay()
+    update_info_text()
 
 func start_enemy_turn() -> void:
     if battle_over:
@@ -119,19 +214,25 @@ func start_enemy_turn() -> void:
     end_turn_button.disabled = true
     status_label.text = "Enemy Turn"
     skip_attack_button.visible = false
+    update_enemy_range_overlay()
+    update_info_text()
     _run_ai_turn()
 
 func _run_ai_turn() -> void:
     await get_tree().create_timer(0.35).timeout
+    if battle_over or current_team != ENEMY_TEAM:
+        return
     for unit: Unit in get_units_for_team(ENEMY_TEAM):
-        if battle_over:
+        if battle_over or current_team != ENEMY_TEAM:
             return
         if not unit.is_alive():
             continue
         ai_take_turn(unit)
         unit.has_acted = true
         await get_tree().create_timer(0.35).timeout
-    if not battle_over:
+        if battle_over or current_team != ENEMY_TEAM:
+            return
+    if not battle_over and current_team == ENEMY_TEAM:
         start_player_turn()
 
 func ai_take_turn(unit: Unit) -> void:
@@ -198,6 +299,14 @@ func get_active_units(team: String) -> Array:
     return result
 
 func _unhandled_input(event: InputEvent) -> void:
+    if event is InputEventKey:
+        var key_event := event as InputEventKey
+        if key_event.pressed and not key_event.echo and key_event.physical_keycode == KEY_R:
+            show_enemy_ranges = not show_enemy_ranges
+            update_enemy_range_overlay()
+            update_info_text()
+            return
+
     if battle_over or current_team != PLAYER_TEAM:
         return
     if not (event is InputEventMouseButton) or not event.pressed or event.button_index != MOUSE_BUTTON_LEFT:
@@ -225,6 +334,7 @@ func _handle_select_unit(tile: Vector2i) -> void:
             available_attacks.append(target.grid_position)
         board.set_highlights(selected_unit.grid_position, available_moves, available_attacks)
         state = "await_move"
+        update_info_text()
 
 func _handle_move_selection(tile: Vector2i) -> void:
     if not selected_unit:
@@ -252,6 +362,7 @@ func _prepare_attack_phase() -> void:
     else:
         state = "await_attack"
         skip_attack_button.visible = true
+        update_info_text()
 
 func _handle_attack_selection(tile: Vector2i) -> void:
     if not selected_unit:
@@ -272,10 +383,12 @@ func finish_unit_action() -> void:
     available_attacks.clear()
     skip_attack_button.visible = false
     board.clear_highlights()
+    update_info_text()
     check_turn_completion()
 
 func move_unit(unit: Unit, tile: Vector2i) -> void:
     unit.set_grid_position(tile)
+    update_enemy_range_overlay()
 
 func get_unit_at(tile: Vector2i) -> Unit:
     for unit: Unit in units:
@@ -341,6 +454,7 @@ func remove_unit(unit: Unit) -> void:
         selected_unit = null
     units.erase(unit)
     unit.queue_free()
+    update_enemy_range_overlay()
 
 func check_battle_over() -> void:
     if battle_over:
@@ -355,9 +469,11 @@ func check_battle_over() -> void:
 func end_battle(winner: String) -> void:
     battle_over = true
     board.clear_highlights()
+    board.set_enemy_range_tiles([])
     end_turn_button.disabled = true
     skip_attack_button.visible = false
     status_label.text = "%s Wins!" % winner
+    update_info_text()
 
 func check_turn_completion() -> void:
     if battle_over:
@@ -384,3 +500,6 @@ func _on_skip_attack_pressed() -> void:
     if battle_over or current_team != PLAYER_TEAM:
         return
     finish_unit_action()
+
+func _on_restart_pressed() -> void:
+    reset_battle()

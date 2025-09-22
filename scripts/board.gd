@@ -8,11 +8,13 @@ var tile_size: int = 64
 var selected_tile: Vector2i = Vector2i(-1, -1)
 var move_tiles: Array = []
 var attack_tiles: Array = []
+var enemy_range_tiles: Array = []
 
 var background_color_dark := Color(0.1, 0.12, 0.18)
 var background_color_light := Color(0.14, 0.16, 0.22)
 var move_color := Color(0.1, 0.6, 1.0, 0.35)
 var attack_color := Color(1.0, 0.2, 0.2, 0.35)
+var enemy_range_color := Color(0.75, 0.3, 1.0, 0.25)
 var selection_outline := Color(1.0, 0.9, 0.2, 0.9)
 
 func setup(size: Vector2i, new_tile_size: int) -> void:
@@ -33,12 +35,21 @@ func set_highlights(selected: Vector2i, moves: Array, attacks: Array) -> void:
     attack_tiles = attacks.duplicate()
     update()
 
+func set_enemy_range_tiles(tiles: Array) -> void:
+    enemy_range_tiles = tiles.duplicate()
+    update()
+
 func _draw() -> void:
     for x in range(grid_width):
         for y in range(grid_height):
             var tile_position := Vector2(x * tile_size, y * tile_size)
             var color := background_color_dark if ((x + y) % 2 == 0) else background_color_light
             draw_rect(Rect2(tile_position, Vector2(tile_size, tile_size)), color)
+
+    for tile in enemy_range_tiles:
+        if is_inside(tile):
+            var rect := Rect2(Vector2(tile.x * tile_size, tile.y * tile_size), Vector2(tile_size, tile_size))
+            draw_rect(rect, enemy_range_color)
 
     for tile in move_tiles:
         if is_inside(tile):
